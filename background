@@ -1,0 +1,96 @@
+const API_KEY = 'key';
+
+chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
+  if (request.action === "summarize") {
+    let pageContent = request.content;
+
+    console.log("Received content to summarize:", pageContent);  // Log the content being passed to the API
+
+    // Check if the content is empty
+    if (!pageContent || pageContent.trim().length === 0) {
+      sendResponse({ summary: "No content to summarize." });
+      return;
+    }
+
+    // Start the async function to get the summary
+    fetchSummary(pageContent)
+      .then(summary => {
+        console.log("Summary generated:", summary);  // Log the summary
+        sendResponse({ summary: summary });
+      })
+      .catch(error => {
+        console.error('Error while fetching summary:', error);
+        sendResponse({ summary: "Error generating summary. Please try again." });
+      });
+
+    // Return true to keep the message channel open until the async response is sent
+    return true;
+  }
+});
+
+async function fetchSummary(content) {
+  try {
+    console.log("Sending request to API with content:", content);  // Log content before API call
+
+    const response = await fetchWithRetry('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: 'gpt-3.5-turbo',
+        messages: [
+          { role: 'system', content: 'You are a helpful assistant.' },
+          { role: 'user', content: `Please summarize the following text: ${content}` } // More specific prompt
+        ],
+        max_tokens: 150,
+      }),
+    });
+
+    // Log the status code and response body
+    console.log('Response status:', response.status);
+    const data = await response.json();
+    console.log('API Response Data:', data);
+
+    // Check if the response contains the expected structure
+    if (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) {
+      return data.choices[0].message.content;
+    } else {
+      console.error("Invalid response structure:", data);
+      throw new Error("Invalid response structure");
+    }
+  } catch (error) {
+    console.error('Error during API request:', error);
+    throw error; // Re-throw to handle the error in the listener
+  }
+}
+
+// Retry function to handle rate limits
+async function fetchWithRetry(url, options, retries = 5, delay = 2000) { // Increased delay
+  try {
+    const response = await fetch(url, options);
+
+    // Log the response status if it's 429
+    if (response.status === 429) {
+      console.log(`Rate-limited. Retrying in ${delay}ms...`);
+    }
+
+    // If rate-limited (status 429), retry after a delay
+    if (response.status === 429 && retries > 0) {
+      await new Promise(resolve => setTimeout(resolve, delay));
+      return fetchWithRetry(url, options, retries - 1, delay * 2); // Exponential backoff
+    }
+
+    // Check if response status is not 200, log and throw error
+    if (response.status !== 200) {
+      console.error('Unexpected response status:', response.status);
+      throw new Error(`Unexpected status: ${response.status}`);
+    }
+
+    return response;
+  } catch (error) {
+    console.error('Error during fetch with retry:', error);
+    throw error;
+  }
+}
